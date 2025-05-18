@@ -1,0 +1,259 @@
+/*
+    meriyah is supposedly nearly 2x faster than 
+    acorn at the cost of 29 KB of extra code
+*/
+import { parse } from 'meriyah';
+import { generate } from 'astring';
+
+let nativeTagClassNames = {};
+"Anchor:a;_:abbr,address,article,aside,b,bdi,bdo,cite,code,dd,dfn,dt,em,figcaption,figure,footer,header,hgroup,i,kbd,main,mark,nav,noscript,rp,rt,ruby,s,samp,search,section,small,strong,sub,summary,sup,u,var,wbr;Area:area;Audio:audio;Base:base;Quote:blockquote,q;Body:body;BR:br;Button:button;Canvas:canvas;TableCaption:caption;TableCol:col,colgroup;Data:data;DataList:datalist;Mod:del,ins;Details:details;Dialog:dialog;Div:div;DList:dl;Embed:embed;FieldSet:fieldset;Form:form;Heading:h1,h2,h3,h4,h5,h6;Head:head;HR:hr;Html:html;IFrame:iframe;Image:img;Input:input;Label:label;Legend:legend;LI:li;Link:link;Map:map;Menu:menu;Meta:meta;Meter:meter;Object:object;OList:ol;OptGroup:optgroup;Option:option;Output:output;Paragraph:p;Param:param;Picture:picture;Pre:pre;Progress:progress;Script:script;Select:select;Source:source;Span:span;Style:style;Unknown:svg;Table:table;TableSection:tbody,tfoot,thead;TableCell:td,th;Template:template;TextArea:textarea;Time:time;Title:title;TableRow:tr;Track:track;UList:ul;Video:video".split(";").forEach(s => {
+    const [ name, tags ] = s.split(":");
+    const fullName = `HTML${name === "_" ? "" : name}Element`;
+    tags.split(",").forEach(tag => nativeTagClassNames[tag] = fullName);
+});
+
+type svqueryFnDef = (a: HTMLElement|SvElement|string|null, initObj?: object, queryParent?: HTMLElement) => SvElement|SvElement[];
+
+declare class SvElement {
+    native: HTMLElement;
+
+    constructor(el: HTMLElement);
+
+    prependTo(a: SvElement | Element): SvElement;
+    appendTo(a: SvElement | Element): SvElement;
+    addClass(...args: string[]): SvElement;
+    removeClass(...args: string[]): SvElement;
+    setId(a: string): SvElement;
+    html(a?: string): SvElement | string;
+    text(a?: string): SvElement | string | null;
+    replaceChild(a: SvElement | Element, b: SvElement | Element): SvElement;
+    removeChild(a: SvElement | Element): SvElement;
+    on(a: string, b: EventListenerOrEventListenerObject, c?: boolean | AddEventListenerOptions): SvElement;
+    css(c: string | object): SvElement;
+    attr(a: string | object, b?: any): SvElement;
+    prepend(...args: (SvElement | Element)[]): SvElement;
+    append(...args: (SvElement | Element)[]): SvElement;
+    $(query: string, initObj?: object): SvElement | SvElement[];
+    get parentEl(): SvElement;
+    insertBefore(newEl: SvElement | Element, refEl: SvElement | Element): SvElement;
+}
+
+declare class SvTemplateElement {
+    tag: string;
+    attributes: object;
+    innerHTML: string;
+    children: (string|SvTemplateElement)[];
+
+    constructor(tag: string, attributes: string, innerHTML: string);
+
+    createInstance(initObj: object): HTMLElement;
+    serialize(isChild?: boolean): string|(string|object)[];
+}
+
+function pascalToHyphen(tag: string): string {
+    let chunkStart = 0;
+    let output = "";
+    for (let i = 0; i <= tag.length; i++) {
+        if (i === tag.length || tag.charCodeAt(i) <= 90) {
+            if (chunkStart != i) {
+                let chunk = tag.slice(chunkStart, i);
+                output += (chunkStart !== 0 ? "-" : "") + chunk.toLowerCase();
+                chunkStart = i;
+            }
+        }
+    }
+    return output;
+}
+
+export class SvCompiler {
+    S$: svqueryFnDef;
+    TemplateElement: typeof SvTemplateElement;
+    constructor(S$: svqueryFnDef, tmpElClass: (typeof SvTemplateElement)) {
+        this.S$ = S$;
+        this.TemplateElement = tmpElClass;
+    }
+
+    compile(name: string, code: string) {
+        // parsed component tree
+        const virtComp = new this.TemplateElement(name, "", code);
+
+        // find script and style tags if available
+        let virtCompScript: SvTemplateElement|null = null;
+        for (let i = 0; i < virtComp.children.length; i++) {
+            const node = virtComp.children[i];
+            if (node instanceof this.TemplateElement && node.tag === "script") {
+                virtCompScript = node;
+                virtComp.children.splice(i, 1);
+                break;
+            }
+        }
+        let virtCompStyle: SvTemplateElement|null = null;
+        for (let i = virtComp.children.length - 1; i >= 0; i--) {
+            const node = virtComp.children[i];
+            if (node instanceof this.TemplateElement && node.tag === "style") {
+                virtCompStyle = node;
+                virtComp.children.splice(i, 1);
+                break;
+            }
+        }
+
+        let firstChild: SvTemplateElement|null = null;
+        let lastChild: SvTemplateElement|null = null;
+        for (let i = 0; i < virtComp.children.length; i++) {
+            const node = virtComp.children[i];
+            if (node instanceof this.TemplateElement) {
+                if (firstChild === null) {
+                    firstChild = node;
+                }
+                lastChild = node;
+            }
+        }
+        let hasMultipleChildren = firstChild !== lastChild;
+
+        // preprocess script
+        let state = {};
+        let ast: any = null;
+        if (virtCompScript) {
+            ast = parse(virtCompScript.innerHTML);
+            console.log(ast);
+
+            for (let i = 0; i < ast.body.length; i++) {
+                const statement = ast.body[i];
+
+                if (statement.type === "VariableDeclaration") {
+                    // replace variable declarations with assignment expressions
+                    let expressions: any = [];
+
+                    for (let j = 0; j < statement.declarations.length; j++) {
+                        let declaration = statement.declarations[j];
+                        if (declaration.id.type === "Identifier") {
+                            const declName = declaration.id.name;
+                            state[declName] = null;
+                            declaration.id.name = `$_state.${declName}`;
+                            expressions.push({
+                                "type": "AssignmentExpression",
+                                "left": declaration.id,
+                                "operator": "=",
+                                "right": declaration.init
+                            });
+                        } else if (declaration.id.type === "ObjectPattern") {
+                            declaration.id.properties.forEach(prop => {
+                                const declName = prop.key.name;
+                                state[declName] = null;
+                                prop.key.name = `$_state.${declName}`;
+                                if (declaration.init.callee?.name === "$props") {
+                                    declaration.init = {
+                                        "type": "MemberExpression",
+                                        "object": declaration.init,
+                                        "computed": false,
+                                        "property": {
+                                            "type": "Identifier",
+                                            "name": declName
+                                        }
+                                    }
+                                }
+                                expressions.push({
+                                    "type": "AssignmentExpression",
+                                    "left": prop.key,
+                                    "operator": "=",
+                                    "right": declaration.init
+                                });
+                            });
+                        }
+                    }
+
+                    ast.body[i] = {
+                        "type": "ExpressionStatement",
+                        "expression": {
+                            "type": "SequenceExpression",
+                            "expressions": expressions
+                        }
+                    };
+                }
+
+                // if (statement.type === "ExpressionStatement") {
+                //     // handle props imports
+                //     let importExpression = statement.expression.expressions[0];
+                //     if (importExpression.right.callee.name === "$props") {
+                //         importExpression.left.properties.forEach(prop => {
+                //             state[prop.key] = null;
+                //         });
+                //     }
+                // }
+            }
+        }
+
+        // TODO: set id + class
+        const firstChildTag = (firstChild as SvTemplateElement).tag;
+        const componentClassSource = `class ${name} extends ${hasMultipleChildren ? "HTMLDivElement" : nativeTagClassNames[firstChildTag]} {
+    static template = S$.TemplateElement.deserialize(${virtComp.serialize()});
+    state = ${JSON.stringify(state)};
+    directives = {};
+    constructor(props) {
+        super();
+        let $_state = this.state;
+        const $props = () => props;
+${ast === null ? "" : generate(ast)}
+        const template = ${name}.template;
+        const that = this;
+        function recurse(el) {
+            for (let i = 0; i < el.children.length; i++) {
+                const node = el.children[i];
+                if (node instanceof S$.TemplateElement) {
+                    for (const key in node.attributes) {
+                        if (key.startsWith("on:")) {
+                            const directiveName = "$dir" + (""+Math.random()).slice(2);
+                            const directiveGenSrc = "return " + node.attributes[key].replace("count", "$_state.count").replace("()", "$_state");
+                            console.log(directiveGenSrc)
+                            const directiveFn = Function(directiveGenSrc)();
+                            that.directives[key] = () => {
+                                directiveFn($_state);
+                                that.render();
+                            };
+                        }
+                    }
+                    recurse(node);
+                }
+            }
+        }
+        recurse(template);
+        this.render();
+        console.log("TEMP", template)
+        console.log("THIS")
+        console.log(this)
+        console.log(this.directives);
+    }
+    render() {
+        let $_state = this.state;
+        const templateInstance = ${name}.template.createInstance($_state);
+        console.log("TEMP INST", templateInstance)
+        const that = this;
+        function recurse(el) {
+            for (let i = 0; i < el.children.length; i++) {
+                const node = el.children[i];
+                if (node instanceof HTMLElement) {
+                    for (const key in node.$directives) {
+                        console.log("DIR", node, node.$directives, key.slice(3), that.directives[key])
+                        node.addEventListener(key.slice(3), that.directives[key]);
+                    }
+                    recurse(node);
+                }
+            }
+        }
+        recurse(templateInstance);
+        this.innerHTML = "";
+        for (let i = 0; i < templateInstance.children.length; i++) {
+            this.append(templateInstance.children[i]);
+        }
+    }
+}
+window.customElements.define("${pascalToHyphen(name)}", ${name}, { extends: "${hasMultipleChildren ? "div" : firstChildTag}" });
+S$.components["${name}"] = ${name};`;
+        
+        return componentClassSource;
+    }
+}
+
+if (globalThis.window !== undefined) {
+    window["SvCompiler"] = SvCompiler;
+}

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+    <meta charset="utf-8">
+    <title>SvQuery Test</title>
+    <script src="../dist/svquery.js"></script>
+    <script>
+        const $ = S$;
+
+        let testNum = 1;
+        function assert(call) {
+            if (!call()) {
+                console.error(`Test ${testNum} Failed: ${call.toString().slice(3)}`);
+            } else {
+                console.log(`Test ${testNum} Passed`);
+            }
+            testNum++;
+        }
+
+        function elEq(a, b) {
+            if (a instanceof $.Element) {
+                a = a.native;
+            }
+            if (b instanceof $.Element) {
+                b = b.native;
+            }
+            return a === b;
+        }
+
+        function arrEq(a, b) {
+            if (a.length != b.length) {
+                return false;
+            }
+
+            if (!Array.isArray(b)) {
+                b = Array.from(b);
+            }
+
+            for (let i = 0; i < a.length; i++) {
+                let has = false;
+                for (let j = 0; j < b.length; j++) {
+                    if (a[i] === b[j] || elEq(a[i], b[j])) {
+                        has = true;
+                        break;
+                    }
+                }
+                if (!has) {
+                    return false;
+                }
+            }
+            
+            return true;
+        }
+    </script>
+</head>
+<body>
+
+    <div id="test">
+        <div class="class1">
+            Div1
+            <div class="class1">
+                Div2
+                <div class="class1">
+                    Div3
+                </div>
+            </div>
+        </div>
+        <p class="class1">
+            P1
+            <p class="class1 class2">P2</p>
+        </p>
+        <textarea class="class2">Textarea1</textarea>
+    </div>
+
+    <div id="expected"></div>
+
+    <script>
+        $("#expected").html($("#test").html())
+    </script>
+
+    <script src="./build/MyHello.js"></script>
+
+    <script src="./test-selectors.js"></script>
+    <script src="./test-components.js"></script>
+
+</body>
+</html>
