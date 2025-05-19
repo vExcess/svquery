@@ -16,9 +16,7 @@ type svqueryFnDef = (a: HTMLElement|SvElement|string|null, initObj?: object, que
 
 declare class SvElement {
     native: HTMLElement;
-
     constructor(el: HTMLElement);
-
     prependTo(a: SvElement | Element): SvElement;
     appendTo(a: SvElement | Element): SvElement;
     addClass(...args: string[]): SvElement;
@@ -41,13 +39,12 @@ declare class SvElement {
 declare class SvTemplateElement {
     tag: string;
     attributes: object;
-    innerHTML: string;
     children: (string|SvTemplateElement)[];
-
+    dependencies: string[];
     constructor(tag: string, attributes: string, innerHTML: string);
-
-    createInstance(initObj: object): HTMLElement;
+    createInstance(initObj: object, depNodeMap?: object): HTMLElement;
     serialize(isChild?: boolean): string|(string|object)[];
+    getInnerHTML(): string;
 }
 
 function pascalToHyphen(tag: string): string {
@@ -114,9 +111,10 @@ export class SvCompiler {
         let state = {};
         let ast: any = null;
         if (virtCompScript) {
-            ast = parse(virtCompScript.innerHTML);
+            ast = parse(virtCompScript.getInnerHTML());
             console.log(ast);
 
+            // handle global states and $props
             for (let i = 0; i < ast.body.length; i++) {
                 const statement = ast.body[i];
 
@@ -169,6 +167,14 @@ export class SvCompiler {
                             "expressions": expressions
                         }
                     };
+                } else if (statement.type === "LabeledStatement" && statement.label.name === "$") {
+                    const declName = statement.body.expression.left.name;
+                    state[declName] = null;
+                    statement.body.expression.left.name = `$_state.${declName}`;
+                    ast.body[i] = {
+                        "type": "ExpressionStatement",
+                        "expression": statement.body.expression
+                    };
                 }
 
                 // if (statement.type === "ExpressionStatement") {
@@ -181,69 +187,188 @@ export class SvCompiler {
                 //     }
                 // }
             }
+
+            function recurse(treeNode: any): string[] {
+                let children: any[] = [];
+                if (treeNode.type === "Program") {
+                    children = treeNode.body;
+                } else if (treeNode.type === "ExpressionStatement") {
+                    if (treeNode.expression.type !== "SequenceExpression") {
+                        treeNode.expression = {
+                            "type": "SequenceExpression",
+                            "expressions": [treeNode.expression]
+                        };
+                    }
+                    children = treeNode.expression.expressions;
+                } else if (treeNode.type === "CallExpression") {
+                    children = treeNode.arguments;
+                } else if (treeNode.type === "ArrowFunctionExpression") {
+                    if (treeNode.body.type !== "BlockStatement") {
+                        treeNode.body = {
+                            "type": "BlockStatement",
+                            "body": [
+                                treeNode.body
+                            ]
+                        };
+                    }
+                    children = treeNode.body.body;
+                } else if (treeNode.type === "UpdateExpression") {
+                    children = [treeNode.argument];
+                }
+
+                let needsUpdate: string[] = [];
+                for (let i = 0; i < children.length; i++) {
+                    const child = children[i];
+                    if (child.type === "Identifier") {
+                        if (state[child.name] !== undefined) {
+                            console.log("EDIT", treeNode)
+                            child.name = "$_state." + child.name;
+                            if (["Program", "ExpressionStatement", "CallExpression", "ArrowFunctionExpression"].includes(treeNode.type)) {
+                                children.push({
+                                    "type": "ExpressionStatement",
+                                    "expression": {
+                                        "type": "CallExpression",
+                                        "callee": {
+                                            "type": "MemberExpression",
+                                            "object": {
+                                                "type": "Identifier",
+                                                "name": "that"
+                                            },
+                                            "property": {
+                                                "type": "Identifier",
+                                                "name": "render"
+                                            },
+                                            "computed": false,
+                                            "optional": false
+                                        },
+                                        "arguments": [],
+                                        "optional": false
+                                    }
+                                });
+                            } else {
+                                needsUpdate.push(child.name);
+                            }
+                        }
+                    } else {
+                        recurse(child).forEach(item => needsUpdate.push(item));
+                        if (needsUpdate.length !== 0 && ["Program", "ExpressionStatement", "CallExpression", "ArrowFunctionExpression"].includes(treeNode.type)) {
+                            children.push({
+                                "type": "CallExpression",
+                                "callee": {
+                                    "type": "MemberExpression",
+                                    "object": {
+                                        "type": "Identifier",
+                                        "name": "that"
+                                    },
+                                    "property": {
+                                        "type": "Identifier",
+                                        "name": "render"
+                                    },
+                                    "computed": false,
+                                    "optional": false
+                                },
+                                "arguments": [{
+                                    "type": "ArrayExpression",
+                                    "elements": needsUpdate.map(item => {
+                                        item = item.slice("$_state.".length);
+                                        return {
+                                            "type": "Literal",
+                                            "value": item,
+                                            "raw": JSON.stringify(item)
+                                        };
+                                    })
+                                }],
+                                "optional": false
+                            });
+                            needsUpdate = [];
+                        }
+                    }
+                }
+                return needsUpdate;
+            }
+
+            // update identifiers to refer to states
+            recurse(ast);
         }
 
         // TODO: set id + class
         const firstChildTag = (firstChild as SvTemplateElement).tag;
-        const componentClassSource = `class ${name} extends ${hasMultipleChildren ? "HTMLDivElement" : nativeTagClassNames[firstChildTag]} {
+        const componentClassSource = `
+function initDirectives(template, rootEL) {
+    for (let i = 0; i < template.children.length; i++) {
+        const node = template.children[i];
+        if (node instanceof S$.TemplateElement) {
+            for (const key in node.attributes) {
+                if (key.startsWith("on:")) {
+                    const directiveGenSrc = "return " + node.attributes[key].replace("count", "$_state.count").replace("()", "$_state");
+                    console.log(directiveGenSrc)
+                    const directiveFn = Function(directiveGenSrc)();
+                    rootEL.directives[key] = () => {
+                        directiveFn(rootEL.state);
+                        rootEL.render(node.dependencies);
+                    };
+                }
+            }
+            initDirectives(node, rootEL);
+        }
+    }
+}
+function initElementTreeListeners(tree, rootEl) {
+    for (let i = 0; i < tree.children.length; i++) {
+        const node = tree.children[i];
+        if (node instanceof HTMLElement) {
+            for (const key in node.$directives) {
+                // console.log("DIR", node, node.$directives, key.slice(3), rootEl.directives[key])
+                node.addEventListener(key.slice(3), rootEl.directives[key]);
+            }
+            initElementTreeListeners(node, rootEl);
+        }
+    }
+}
+class ${name} extends ${hasMultipleChildren ? "HTMLDivElement" : nativeTagClassNames[firstChildTag]} {
     static template = S$.TemplateElement.deserialize(${virtComp.serialize()});
     state = ${JSON.stringify(state)};
     directives = {};
+    depNodeMap = {};
     constructor(props) {
         super();
+        let that = this;
         let $_state = this.state;
         const $props = () => props;
 ${ast === null ? "" : generate(ast)}
         const template = ${name}.template;
-        const that = this;
-        function recurse(el) {
-            for (let i = 0; i < el.children.length; i++) {
-                const node = el.children[i];
-                if (node instanceof S$.TemplateElement) {
-                    for (const key in node.attributes) {
-                        if (key.startsWith("on:")) {
-                            const directiveName = "$dir" + (""+Math.random()).slice(2);
-                            const directiveGenSrc = "return " + node.attributes[key].replace("count", "$_state.count").replace("()", "$_state");
-                            console.log(directiveGenSrc)
-                            const directiveFn = Function(directiveGenSrc)();
-                            that.directives[key] = () => {
-                                directiveFn($_state);
-                                that.render();
-                            };
-                        }
-                    }
-                    recurse(node);
-                }
-            }
-        }
-        recurse(template);
+        initDirectives(template, this);
         this.render();
         console.log("TEMP", template)
         console.log("THIS")
         console.log(this)
         console.log(this.directives);
     }
-    render() {
-        let $_state = this.state;
-        const templateInstance = ${name}.template.createInstance($_state);
-        console.log("TEMP INST", templateInstance)
-        const that = this;
-        function recurse(el) {
-            for (let i = 0; i < el.children.length; i++) {
-                const node = el.children[i];
-                if (node instanceof HTMLElement) {
-                    for (const key in node.$directives) {
-                        console.log("DIR", node, node.$directives, key.slice(3), that.directives[key])
-                        node.addEventListener(key.slice(3), that.directives[key]);
+    render(changedStates) {
+        if (changedStates === undefined) {
+            let $_state = this.state;
+            const templateInstance = ${name}.template.createInstance($_state, this.depNodeMap);
+            console.log("TEMP INST", templateInstance)        
+            initElementTreeListeners(templateInstance, this);
+            this.innerHTML = "";
+            for (let i = 0; i < templateInstance.children.length; i++) {
+                this.append(templateInstance.children[i]);
+            }
+        } else {
+            for (let i = 0; i < changedStates.length; i++) {
+                const stateName = changedStates[i];
+                let dependentNodes = this.depNodeMap[stateName];
+                for (let j = 0; j < dependentNodes.length; j++) {
+                    let node = dependentNodes[j];
+                    let newNode = node.$template.createInstance(this.state);
+                    dependentNodes[j] = newNode;
+                    for (const key in newNode.$directives) {
+                        newNode.addEventListener(key.slice(3), this.directives[key]);
                     }
-                    recurse(node);
+                    initElementTreeListeners(newNode, this);
+                    node.replaceWith(newNode);
                 }
             }
-        }
-        recurse(templateInstance);
-        this.innerHTML = "";
-        for (let i = 0; i < templateInstance.children.length; i++) {
-            this.append(templateInstance.children[i]);
         }
     }
 }

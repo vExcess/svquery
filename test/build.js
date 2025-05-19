@@ -1,5 +1,5 @@
-const { S$ } = require("../svquery.ts");
-const { SvCompiler } = require("../SvCompiler.ts");
+const { S$ } = require("../src/svquery.ts");
+const { SvCompiler } = require("../src/SvCompiler.ts");
 const fs = require("fs");
 
 if (!fs.existsSync("test/build")) {

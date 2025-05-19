@@ -1,5 +1,5 @@
 (() => {
-  // SvElement.ts
+  // src/SvElement.ts
   var SvElement = class _SvElement {
     native;
     constructor(el) {
@@ -152,26 +152,70 @@
   }
   Object.defineProperties(SvElement.prototype, obj);
 
-  // SvTemplateElement.ts
+  // src/SvTemplateElement.ts
   var nativeTagNames = "a,abbr,address,area,article,aside,audio,b,base,bdi,bdo,blockquote,body,br,button,canvas,caption,cite,code,col,colgroup,data,datalist,dd,del,details,dfn,dialog,div,dl,dt,em,embed,fieldset,figcaption,figure,footer,form,h1,h2,h3,h4,h5,h6,head,header,hgroup,hr,html,i,iframe,img,input,ins,kbd,label,legend,li,link,main,map,mark,menu,meta,meter,nav,noscript,object,ol,optgroup,option,output,p,param,picture,pre,progress,q,rp,rt,ruby,s,samp,script,search,section,select,small,source,span,strong,style,sub,summary,sup,svg,table,tbody,td,template,textarea,tfoot,th,thead,time,title,tr,track,u,ul,var,video,wbr".split(",");
   var SvTemplateElement = class _SvTemplateElement {
     tag;
     attributes;
-    innerHTML;
+    dependencies = [];
     children;
-    constructor(tag, attributes, innerHTML) {
+    constructor(tag, attributes, innerHTML, dependencies) {
       this.tag = tag;
       this.attributes = typeof attributes === "string" ? S$.parseAttributes(attributes) : attributes;
-      this.innerHTML = innerHTML;
       this.children = S$.parseHTML(innerHTML);
+      if (dependencies) {
+        this.dependencies = dependencies;
+      } else {
+        this.calculateDependencies();
+      }
     }
-    createInstance(initObj) {
+    getInnerHTML() {
+      let innerHTML = "";
+      for (let i = 0; i < this.children.length; i++) {
+        const childNode = this.children[i];
+        if (childNode instanceof _SvTemplateElement) {
+          innerHTML += childNode.getInnerHTML();
+        } else {
+          innerHTML += childNode;
+        }
+      }
+      return innerHTML;
+    }
+    calculateDependencies() {
+      let deps = /* @__PURE__ */ new Set();
+      for (let i = 0; i < this.children.length; i++) {
+        const childNode = this.children[i];
+        if (typeof childNode === "string") {
+          let textContent = childNode;
+          let startIdx = 0;
+          while ((startIdx = textContent.indexOf("{", startIdx)) !== -1) {
+            let endIdx = textContent.indexOf("}", startIdx + 1);
+            const prop = textContent.slice(startIdx + 1, endIdx).trim();
+            deps.add(prop);
+            startIdx += 2;
+          }
+        }
+      }
+      this.dependencies = Array.from(deps);
+    }
+    createInstance(initObj, depNodeMap) {
       const native = document.createElement(nativeTagNames.includes(this.tag) ? this.tag : "div");
+      native["$template"] = this;
+      if (depNodeMap) {
+        for (let i = 0; i < this.dependencies.length; i++) {
+          const dep = this.dependencies[i];
+          if (!depNodeMap[dep]) {
+            depNodeMap[dep] = [native];
+          } else {
+            depNodeMap[dep].push(native);
+          }
+        }
+      }
       for (let i = 0; i < this.children.length; i++) {
         const childNode = this.children[i];
         let nativeChild;
         if (childNode instanceof _SvTemplateElement) {
-          nativeChild = childNode.createInstance(initObj);
+          nativeChild = childNode.createInstance(initObj, depNodeMap);
         } else {
           let textContent = childNode;
           let startIdx = 0;
@@ -209,12 +253,12 @@
         const child = this.children[i];
         serializedChildren.push(child instanceof _SvTemplateElement ? child.serialize(true) : child);
       }
-      const arrayed = [this.tag, this.attributes, serializedChildren];
+      const arrayed = [this.tag, this.attributes, this.dependencies, serializedChildren];
       return isChild ? arrayed : JSON.stringify(arrayed);
     }
     static deserialize(serialized) {
-      let el = new _SvTemplateElement(serialized[0], serialized[1], "");
-      const children = serialized[2];
+      let el = new _SvTemplateElement(serialized[0], serialized[1], "", serialized[2]);
+      const children = serialized[3];
       for (let i = 0; i < children.length; i++) {
         const child = children[i];
         el.children.push(typeof child === "string" ? child : _SvTemplateElement.deserialize(child));
@@ -223,7 +267,7 @@
     }
   };
 
-  // svquery.ts
+  // src/svquery.ts
   function createElement(tag, initObj) {
     const component = S$.components[tag];
     if (component) {

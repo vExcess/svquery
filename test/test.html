@@ -83,5 +83,37 @@
     <script src="./test-selectors.js"></script>
     <script src="./test-components.js"></script>
 
+    <script src="../dist/SvCompiler.js"></script>
+    <script>
+const compiler = new SvCompiler(S$, S$.TemplateElement);
+
+function doComponent(name) {
+    const src = `
+<script>
+    let { whatItIs } = $props();
+    const name = 'SvQuery';
+    $: count = 0;
+    $: timer = 0;
+
+    setInterval(() => {
+        timer++;
+    }, 500)
+    
+\<\/script>
+
+<div>
+    <h1>{name} is {whatItIs}!</h1>
+    <p>Timer: {timer}</p>
+    <button on:click={() => count++}>Count: {count}!</button>
+</div>
+
+    `;
+    const compiledHello = compiler.compile(name, src);
+    console.log(compiledHello)
+}
+
+doComponent("MyHello");
+    </script>
+
 </body>
 </html>

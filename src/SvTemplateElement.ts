@@ -5,25 +5,74 @@ const nativeTagNames = "a,abbr,address,area,article,aside,audio,b,base,bdi,bdo,b
 export class SvTemplateElement {
     tag: string;
     attributes: object;
-    innerHTML: string;
+    dependencies: string[] = [];
     children: (string|SvTemplateElement)[];
 
-    constructor(tag: string, attributes: string|object, innerHTML: string) {
+    constructor(tag: string, attributes: string|object, innerHTML: string, dependencies?: string[]) {
         this.tag = tag;
         this.attributes = typeof attributes === "string" ? S$.parseAttributes(attributes) : attributes;
-        this.innerHTML = innerHTML;
         this.children = S$.parseHTML(innerHTML);
+        if (dependencies) {
+            this.dependencies = dependencies;
+        } else {
+            this.calculateDependencies();
+        }
     }
 
-    createInstance(initObj: object): HTMLElement {
+    getInnerHTML(): string{
+        let innerHTML = "";
+        for (let i = 0; i < this.children.length; i++) {
+            const childNode = this.children[i];
+            if (childNode instanceof SvTemplateElement) {
+                innerHTML += childNode.getInnerHTML();
+            } else {
+                innerHTML += childNode;
+            }
+        }
+        return innerHTML;
+    }
+
+    calculateDependencies() {
+        let deps: Set<string> = new Set();
+        for (let i = 0; i < this.children.length; i++) {
+            const childNode = this.children[i];
+            if (typeof childNode === "string") {
+                // templated text node
+                let textContent = childNode;
+                let startIdx: number = 0;
+                while ((startIdx = textContent.indexOf("{", startIdx)) !== -1) {
+                    let endIdx = textContent.indexOf("}", startIdx + 1);
+                    const prop = textContent.slice(startIdx + 1, endIdx).trim();
+                    deps.add(prop);
+                    startIdx += 2;
+                }
+            }
+        }
+        this.dependencies = Array.from(deps);
+    }
+
+    createInstance(initObj: object, depNodeMap?: object): HTMLElement {        
         const native = document.createElement(nativeTagNames.includes(this.tag) ? this.tag : "div");
+        native["$template"] = this;
         
+        // build dependency node map
+        if (depNodeMap) {
+            for (let i = 0; i < this.dependencies.length; i++) {
+                const dep = this.dependencies[i];
+                if (!depNodeMap[dep]) {
+                    depNodeMap[dep] = [native];
+                } else {
+                    depNodeMap[dep].push(native);
+                }
+            }
+        }
+
         // create children nodes
         for (let i = 0; i < this.children.length; i++) {
             const childNode = this.children[i];
             let nativeChild: Node;
             if (childNode instanceof SvTemplateElement) {
-                nativeChild = childNode.createInstance(initObj);
+                nativeChild = childNode.createInstance(initObj, depNodeMap);
             } else {
                 // templated text node
                 let textContent = childNode;
@@ -69,15 +118,15 @@ export class SvTemplateElement {
             const child = this.children[i];
             serializedChildren.push(child instanceof SvTemplateElement ? child.serialize(true) : child);
         }
-        const arrayed = [this.tag, this.attributes, serializedChildren];
+        const arrayed = [this.tag, this.attributes, this.dependencies, serializedChildren];
         return isChild ? arrayed : JSON.stringify(arrayed);
     }
 
     static deserialize(serialized: (string|object)[]): SvTemplateElement {
-        let el = new SvTemplateElement(serialized[0] as string, serialized[1] as object, "");
-        const children = serialized[2] as any;
+        let el = new SvTemplateElement(serialized[0] as string, serialized[1] as object, "", serialized[2] as string[]);
+        const children = serialized[3] as any;
         for (let i = 0; i < children.length; i++) {
-            const child = children[i];
+            const child: string|any[] = children[i];
             el.children.push(typeof child === "string" ? child : SvTemplateElement.deserialize(child));
         }
         return el;
