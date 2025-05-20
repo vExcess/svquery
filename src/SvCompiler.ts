@@ -305,7 +305,7 @@ function initDirectives(template, rootEL) {
                     const directiveFn = Function(directiveGenSrc)();
                     rootEL.directives[key] = () => {
                         directiveFn(rootEL.state);
-                        rootEL.render(node.dependencies);
+                        rootEL.render(Object.keys(node.dependencies));
                     };
                 }
             }
@@ -339,10 +339,10 @@ ${ast === null ? "" : generate(ast)}
         const template = ${name}.template;
         initDirectives(template, this);
         this.render();
-        console.log("TEMP", template)
-        console.log("THIS")
-        console.log(this)
-        console.log(this.directives);
+        // console.log("TEMP", template)
+        // console.log("THIS")
+        // console.log(this)
+        // console.log(this.directives);
     }
     render(changedStates) {
         if (changedStates === undefined) {
@@ -355,18 +355,34 @@ ${ast === null ? "" : generate(ast)}
                 this.append(templateInstance.children[i]);
             }
         } else {
+            // console.log("CHANGE", changedStates)
             for (let i = 0; i < changedStates.length; i++) {
                 const stateName = changedStates[i];
                 let dependentNodes = this.depNodeMap[stateName];
+                // console.log("DEPD", dependentNodes)
                 for (let j = 0; j < dependentNodes.length; j++) {
                     let node = dependentNodes[j];
-                    let newNode = node.$template.createInstance(this.state);
-                    dependentNodes[j] = newNode;
-                    for (const key in newNode.$directives) {
-                        newNode.addEventListener(key.slice(3), this.directives[key]);
+                    const isTextNode = node instanceof Text;
+                    const template = isTextNode ? node.parentElement.$template : node.$template;
+                    // console.log("TMP", template)
+                    if (isTextNode) {
+                        const parent = node.parentElement;
+                        let childNodes = Array.from(parent.childNodes);
+                        let childIdx = childNodes.indexOf(node);
+                        let runtimeComponent = node;
+                        while (!runtimeComponent.state) {
+                            runtimeComponent = runtimeComponent.parentElement;
+                        }
+                        node.textContent = template.templatedText(template.children[childIdx], runtimeComponent.state);
+                    } else {
+                        let newNode = template.createInstance(this.state);
+                        dependentNodes[j] = newNode;
+                        for (const key in newNode.$directives) {
+                            newNode.addEventListener(key.slice(3), this.directives[key]);
+                        }
+                        initElementTreeListeners(newNode, this);
+                        node.replaceWith(newNode);
                     }
-                    initElementTreeListeners(newNode, this);
-                    node.replaceWith(newNode);
                 }
             }
         }

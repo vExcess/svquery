@@ -5,10 +5,10 @@ const nativeTagNames = "a,abbr,address,area,article,aside,audio,b,base,bdi,bdo,b
 export class SvTemplateElement {
     tag: string;
     attributes: object;
-    dependencies: string[] = [];
+    dependencies: object = {};
     children: (string|SvTemplateElement)[];
 
-    constructor(tag: string, attributes: string|object, innerHTML: string, dependencies?: string[]) {
+    constructor(tag: string, attributes: string|object, innerHTML: string, dependencies?: object) {
         this.tag = tag;
         this.attributes = typeof attributes === "string" ? S$.parseAttributes(attributes) : attributes;
         this.children = S$.parseHTML(innerHTML);
@@ -19,7 +19,7 @@ export class SvTemplateElement {
         }
     }
 
-    getInnerHTML(): string{
+    getInnerHTML(): string {
         let innerHTML = "";
         for (let i = 0; i < this.children.length; i++) {
             const childNode = this.children[i];
@@ -33,7 +33,7 @@ export class SvTemplateElement {
     }
 
     calculateDependencies() {
-        let deps: Set<string> = new Set();
+        let deps = {} as Map<String, number[]>;
         for (let i = 0; i < this.children.length; i++) {
             const childNode = this.children[i];
             if (typeof childNode === "string") {
@@ -43,29 +43,35 @@ export class SvTemplateElement {
                 while ((startIdx = textContent.indexOf("{", startIdx)) !== -1) {
                     let endIdx = textContent.indexOf("}", startIdx + 1);
                     const prop = textContent.slice(startIdx + 1, endIdx).trim();
-                    deps.add(prop);
+                    if (!deps[prop]) {
+                        deps[prop] = [];
+                    }
+                    deps[prop].push(i);
                     startIdx += 2;
                 }
             }
         }
-        this.dependencies = Array.from(deps);
+        this.dependencies = deps;
+    }
+
+    templatedText(textTemplate: string, initObj: object): string {
+        // templated text node
+        let startIdx: number = 0;
+        while ((startIdx = textTemplate.indexOf("{", startIdx)) !== -1) {
+            let endIdx = textTemplate.indexOf("}", startIdx + 1);
+            const prop = textTemplate.slice(startIdx + 1, endIdx);
+            const segA = textTemplate.slice(0, startIdx);
+            const segB = "" + initObj[prop.trim()];
+            const segC = textTemplate.slice(endIdx + 1);
+            textTemplate = segA + segB + segC;
+            startIdx += segB.length;
+        }
+        return textTemplate;
     }
 
     createInstance(initObj: object, depNodeMap?: object): HTMLElement {        
         const native = document.createElement(nativeTagNames.includes(this.tag) ? this.tag : "div");
         native["$template"] = this;
-        
-        // build dependency node map
-        if (depNodeMap) {
-            for (let i = 0; i < this.dependencies.length; i++) {
-                const dep = this.dependencies[i];
-                if (!depNodeMap[dep]) {
-                    depNodeMap[dep] = [native];
-                } else {
-                    depNodeMap[dep].push(native);
-                }
-            }
-        }
 
         // create children nodes
         for (let i = 0; i < this.children.length; i++) {
@@ -74,22 +80,29 @@ export class SvTemplateElement {
             if (childNode instanceof SvTemplateElement) {
                 nativeChild = childNode.createInstance(initObj, depNodeMap);
             } else {
-                // templated text node
-                let textContent = childNode;
-                let startIdx: number = 0;
-                while ((startIdx = textContent.indexOf("{", startIdx)) !== -1) {
-                    let endIdx = textContent.indexOf("}", startIdx + 1);
-                    const prop = textContent.slice(startIdx + 1, endIdx);
-                    // console.log(initObj, startIdx, endIdx, prop)
-                    const segA = textContent.slice(0, startIdx);
-                    const segB = "" + initObj[prop.trim()];
-                    const segC = textContent.slice(endIdx + 1);
-                    textContent = segA + segB + segC;
-                    startIdx += segB.length;
-                }
-                nativeChild = new Text(textContent);
+                nativeChild = new Text(this.templatedText(childNode, initObj));
             }
             native.append(nativeChild);
+        }
+
+        // build dependency node map
+        if (depNodeMap) {
+            for (const depName in this.dependencies) {
+                if (!depNodeMap[depName]) {
+                    depNodeMap[depName] = [];
+                }
+
+                const depChildIdxs = this.dependencies[depName];
+                for (let j = 0; j < depChildIdxs.length; j++) {
+                    const idx = depChildIdxs[j];
+                    if (idx === -1) {
+                        // -1 is the node itself rather than its children
+                        depNodeMap[depName].push(native);
+                    } else {
+                        depNodeMap[depName].push(native.childNodes[idx]);
+                    }
+                }
+            }
         }
 
         native["$directives"] = {};
@@ -123,7 +136,7 @@ export class SvTemplateElement {
     }
 
     static deserialize(serialized: (string|object)[]): SvTemplateElement {
-        let el = new SvTemplateElement(serialized[0] as string, serialized[1] as object, "", serialized[2] as string[]);
+        let el = new SvTemplateElement(serialized[0] as string, serialized[1] as object, "", serialized[2] as string[][]);
         const children = serialized[3] as any;
         for (let i = 0; i < children.length; i++) {
             const child: string|any[] = children[i];

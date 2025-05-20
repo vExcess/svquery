@@ -7,11 +7,10 @@
     setInterval(() => {
         timer++;
     }, 500)
-    
 </script>
 
 <div>
     <h1>{name} is {whatItIs}!</h1>
-    <p>Timer: {timer}</p>
+    <p><span>Timer: </span>{timer}</p>
     <button on:click={() => count++}>Count: {count}!</button>
 </div>
